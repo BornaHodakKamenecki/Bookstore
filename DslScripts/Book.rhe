@@ -1,0 +1,223 @@
+﻿Module Bookstore
+{
+    Entity Book
+    {
+        ShortString Code { AutoCode; }
+        ShortString Title;
+        Integer NumberOfPages;
+        Reference Author Bookstore.Person;
+
+        ItemFilter ForeignAuthorXWithComments 'item =>
+            item.Author.Name.StartsWith("X")
+            && item.Extension_ForeignBook.ID != null
+            && _domRepository.Bookstore.Comment.Subquery.Where(c => c.BookID == item.ID).Count() >= 3';
+
+        ComposableFilterBy LongBooks2 '(query, repository, parameter) =>
+        {
+            return query.Where(item => item.NumberOfPages >= 500);
+        }';
+
+
+        FilterBy ComplexSearch '(repository, parameter) =>
+        {
+            var query = repository.Bookstore.Book.Query(item => item.NumberOfPages >= parameter.MinimumPages);
+            if (parameter.ForeignBooksOnly == true)
+                query = query.Where(item => item.Extension_ForeignBook.ID != null);
+            Book[] books = query.ToSimple().ToArray();
+
+            if (parameter.MaskTitles == true)
+                foreach (var book in books.Where(b => !string.IsNullOrEmpty(b.Title)))
+                    book.Title = book.Title.First() + "***" + book.Title.Last();
+
+            return books;
+        }';
+    }
+
+    Parameter LongBooks2;
+
+    Parameter ComplexSearch
+    {
+        Integer MinimumPages;
+        Bool ForeignBooksOnly;
+        Bool MaskTitles;
+    }
+
+    Entity Person
+    {
+        ShortString Name;
+    }
+
+    Entity Comment
+    {
+        Reference Book { Detail; }
+        LongString Text;
+    }
+
+    Entity ChildrensBook
+    {
+        Extends Bookstore.Book;
+
+        Integer AgeFrom;
+        Integer AgeTo;
+        IntegerRange AgeFrom AgeTo;
+
+    }
+
+    Entity ForeignBook
+    {
+        Extends Bookstore.Book;
+
+        ShortString OriginalLanguage;
+        Reference Translator Bookstore.Person;
+    }
+
+    Entity Topic 
+    {
+        ShortString Name { Unique; Required; }
+    }
+
+    Entity BookTopic
+    {
+        Reference Book { Detail; }
+        Reference Topic { Required; }
+
+        UniqueMultiple 'Book Topic';
+    }
+
+    Entity Employee
+    {
+        Integer IdentificationNumber;
+        ShortString LastName { Required; }
+        ShortString FirstName { Required; }
+        ShortString Code { RegExMatch "\d{7,10}" "Code must have 7 to 10 digits."; }
+        DateTime WorkStarted { Required; }
+        DateTime WorkFinished;
+        Integer TestPeriod { MinValue 1; MaxValue 12; }
+        ShortString Iban { Required; Unique; MinLength 21; MaxLength 21; }
+
+        UniqueMultiple 'LastName FirstName';
+
+        ItemFilter FinishBeforeStart 'employee => employee.WorkFinished != null
+            && employee.WorkFinished.Value < employee.WorkStarted.Value';
+        InvalidData FinishBeforeStart 'It is not allowed to enter a WorkFinished time before the WorkStarted time.';
+    }
+
+    Browse BookGrid Bookstore.Book
+    {
+        Take Code;
+        Take Title;
+        Take 'Author.Name';
+        Take TranslatorName 'Extension_ForeignBook.Translator.Name';
+        Take NumberOfComments 'Extension_BookInfo.NumberOfComments';
+    }
+
+    SqlQueryable BookInfo <SQL\BookInfo.sql>
+    {
+        Extends Bookstore.Book;
+        Integer NumberOfComments;
+
+        AutodetectSqlDependencies;
+    }
+
+    //ASSIGNMENT => VRATI SE !!!
+
+    // Browse BGNumberOfTopicsInBook Bookstore.Book
+    // {
+    //     Take Title;
+    //     Take 'Author.Name';
+    //     Take 'Extension_NumberOfTopicsInBook.NumberOfTopics';
+    // }
+
+    // SqlQueryable NumberOfTopicsInBook <SQL\NumberOfTopicsInBook.sql>
+    // {
+    //     Extends Bookstore.Book;
+    //     Integer NumberOfTopics;
+
+    //     AutodetectSqlDependencies;
+    // }
+
+    Computed ExpectedBookRating 'repository =>
+        {
+            var books = repository.Bookstore.Book.Query()
+                .Select(b =>
+                    new
+                    {
+                        b.ID,
+                        b.Title,
+                        IsForeign = b.Extension_ForeignBook.ID != null
+                    })
+                .ToList();
+
+            var ratings = new List<ExpectedBookRating>();
+            foreach (var book in books)
+            {
+                decimal rating = 0;
+
+                if (book.Title?.IndexOf("super", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                    rating += 100;
+
+                if (book.Title?.IndexOf("great", StringComparison.InvariantCultureIgnoreCase) >= 0)
+                    rating += 50;
+
+                if (book.IsForeign)
+                    rating *= 1.2m;
+
+                ratings.Add(new ExpectedBookRating { ID = book.ID, Rating = rating });
+            }
+
+            return ratings.ToArray();
+        }'
+    {
+        Extends Bookstore.Book;
+        Decimal Rating;
+    }
+
+
+    Computed ExternalCustomer 'repository =>
+        {
+            // Gets a list of users from another web API and returns it as a Rhetos data structure.
+            var httpClient = new System.Net.Http.HttpClient();
+            var usersJson = httpClient.GetStringAsync("https://jsonplaceholder.typicode.com/users").Result;
+            var users = Newtonsoft.Json.JsonConvert.DeserializeObject<List<System.Dynamic.ExpandoObject>>(usersJson);
+            var names = users.Select((dynamic user) => user.name);
+            return names.Select(name => new ExternalCustomer { Name = name }).ToArray();
+        }'
+    {
+        ShortString Name;
+    }
+
+    Hardcoded Genre
+    {
+        ShortString Label; // Short text displayed to user.
+        LongString Description;
+        Bool IsFiction;
+
+        Entry ScienceFiction
+        {
+            Value Label 'Science fiction';
+            Value Description 'A speculative fiction with imagined elements that are inspired by natural sciences or social sciences.';
+            Value IsFiction 1;
+        }
+
+        Entry Biography
+        {
+            Value Label 'Biography';
+            Value Description 'A written narrative of a persons life.';
+            Value IsFiction 0;
+        }
+    }
+
+    Action InsertNBooks
+        '(parameter, repository, userInfo) =>
+        {
+            for (int i = 0; i < parameter.BookNumber; i++)
+            {
+                var newBook = new Bookstore.Book { Code = "+++", Title = "New book" };
+                repository.Bookstore.Book.Insert(newBook);
+            }
+        }'
+            {
+                Integer BookNumber;
+            }
+    
+}
